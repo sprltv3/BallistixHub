@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Ballistix HUD Uplink</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white font-sans antialiased p-4">
+
+    <div class="max-w-md mx-auto">
+        <div class="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
+            <h1 class="text-2xl font-bold text-cyan-400">HUD UPLINK</h1>
+            <button id="connectBtn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded font-bold transition-colors">
+                Connect BLE
+            </button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-4 mb-6">
+            <div class="bg-gray-800 p-3 rounded">
+                <label class="block text-xs text-gray-400 mb-1">STAGE TIME (SEC)</label>
+                <input type="number" id="stageTime" value="120" class="w-full bg-gray-900 text-xl text-yellow-400 font-bold border border-gray-700 rounded p-2 text-center">
+            </div>
+            <div class="bg-gray-800 p-3 rounded">
+                <label class="block text-xs text-gray-400 mb-1">TARGET COUNT</label>
+                <input type="number" id="targetCount" value="3" class="w-full bg-gray-900 text-xl text-white font-bold border border-gray-700 rounded p-2 text-center" onchange="updateTargetRows()">
+            </div>
+        </div>
+
+        <div class="bg-gray-800 p-3 rounded mb-6">
+            <div class="grid grid-cols-3 gap-2 mb-2 px-1">
+                <div class="text-xs text-cyan-400 font-bold">YARDS</div>
+                <div class="text-xs text-cyan-400 font-bold">ELEV (U)</div>
+                <div class="text-xs text-cyan-400 font-bold">WIND (L/R)</div>
+            </div>
+            <div id="targetRows" class="space-y-2"></div>
+        </div>
+
+        <button id="sendBtn" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold text-xl py-4 rounded shadow-lg transition-colors opacity-50 cursor-not-allowed" disabled>
+            TRANSMIT TO RIFLE
+        </button>
+        
+        <p id="statusText" class="text-center text-sm text-gray-400 mt-4">Not Connected</p>
+    </div>
+
+    <script>
+        // Offline Cache Registration
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js');
+            });
+        }
+
+        const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+        const CHAR_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+        
+        let bleDevice;
+        let bleCharacteristic;
+
+        function updateTargetRows() {
+            const count = document.getElementById("targetCount").value;
+            const container = document.getElementById("targetRows");
+            container.innerHTML = ""; 
+            
+            for (let i = 1; i <= count; i++) {
+                container.innerHTML += `
+                    <div class="grid grid-cols-3 gap-2">
+                        <input type="number" id="yds_${i}" placeholder="T${i}" class="bg-gray-900 border border-gray-700 rounded p-2 text-white text-center font-bold">
+                        <input type="number" id="elev_${i}" step="0.1" placeholder="0.0" class="bg-gray-900 border border-gray-700 rounded p-2 text-white text-center font-bold">
+                        <input type="number" id="wind_${i}" step="0.1" placeholder="0.0" class="bg-gray-900 border border-gray-700 rounded p-2 text-white text-center font-bold">
+                    </div>
+                `;
+            }
+        }
+        updateTargetRows();
+
+        document.getElementById("connectBtn").addEventListener("click", async () => {
+            try {
+                document.getElementById("statusText").innerText = "1/5: Scanning for HUD...";
+                
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                document.getElementById("statusText").innerText = "2/5: Selected! Connecting to Radio...";
+                const server = await bleDevice.gatt.connect();
+
+                document.getElementById("statusText").innerText = "3/5: Connected! Locating Service...";
+                const service = await server.getPrimaryService(SERVICE_UUID);
+
+                document.getElementById("statusText").innerText = "4/5: Service Found! Getting Data Line...";
+                bleCharacteristic = await service.getCharacteristic(CHAR_UUID);
+
+                document.getElementById("statusText").innerText = "5/5: Linked!";
+                document.getElementById("connectBtn").classList.replace("bg-gray-700", "bg-green-600");
+                document.getElementById("connectBtn").innerText = "Connected";
+                
+                const sendBtn = document.getElementById("sendBtn");
+                sendBtn.disabled = false;
+                sendBtn.classList.remove("opacity-50", "cursor-not-allowed");
+
+            } catch (error) {
+                document.getElementById("statusText").innerText = "Error: " + error;
+            }
+        });
+
+        document.getElementById("sendBtn").addEventListener("click", async () => {
+            if (!bleCharacteristic) return;
+            const count = parseInt(document.getElementById("targetCount").value);
+            
+            let payload = { t: parseInt(document.getElementById("stageTime").value), c: count, d: [] };
+            for (let i = 1; i <= count; i++) {
+                payload.d.push({
+                    y: parseFloat(document.getElementById(`yds_${i}`).value) || 0,
+                    e: parseFloat(document.getElementById(`elev_${i}`).value) || 0,
+                    w: parseFloat(document.getElementById(`wind_${i}`).value) || 0
+                });
+            }
+
+            const jsonString = JSON.stringify(payload);
+            const dataBytes = new TextEncoder().encode(jsonString);
+
+            try {
+                document.getElementById("statusText").innerText = "Transmitting...";
+                await bleCharacteristic.writeValueWithResponse(dataBytes);
+                document.getElementById("statusText").innerText = "Data sent successfully!";
+                document.getElementById("sendBtn").classList.replace("bg-green-600", "bg-cyan-500");
+                setTimeout(() => document.getElementById("sendBtn").classList.replace("bg-cyan-500", "bg-green-600"), 500);
+            } catch (error) {
+                document.getElementById("statusText").innerText = "Error: " + error;
+            }
+        });
+    </script>
+</body>
+</html>
